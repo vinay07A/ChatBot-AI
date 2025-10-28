@@ -6,9 +6,7 @@ const tvly = tavily({ apiKey: process.env.TAVILY_API_KEY });
 
 const cache = new NodeCache({ stdTTL: 60 * 60 * 24 });
 const MAX_RETRIES = 10;
-let count = 0;
-
-export let messages = [
+export let baseMessages = [
     {
         role: "system",
         content: `You are smart personal assistant.
@@ -23,7 +21,7 @@ export let messages = [
 
             Example:
             Q: What is the capital of France?
-            A: The capital of Framnce is Parsis.
+            A: The capital of France is Paris.
 
             Q: What's the weather in Mumbai right now?
             A: (use the search tool to find the latest weather)
@@ -39,7 +37,8 @@ export let messages = [
 ];
 
 export async function generate(userMessage, threadId) {
-    messages = cache.get(threadId) ?? messages;
+    let count = 0;
+    let messages = cache.get(threadId) ?? baseMessages;
     messages.push({
         role: 'user',
         content: userMessage
@@ -55,23 +54,24 @@ export async function generate(userMessage, threadId) {
         const toolCalls = chatCompletion.choices[0]?.message.tool_calls;
         if (!toolCalls) {
             cache.set(threadId, messages);
-            console.log("messages:", messages);
-            return chatCompletion.choices[0]?.message.content;
+            return chatCompletion.choices[0]?.message.content?.trim();
         }
 
         for (const tool of toolCalls) {
             const functionName = tool.function.name;
-            const functionParams = tool.function.arguments;
+            const params = typeof tool.function.arguments === "string"
+                ? JSON.parse(tool.function.arguments)
+                : tool.function.arguments;
 
             if (functionName === 'webSearch') {
-                const toolResult = await webSearch(JSON.parse(functionParams));
-                // console.log('Tool Result: ', toolResult);
+                const toolResult = await searchWeb(params);
                 messages.push({
                     tool_call_id: tool.id,
                     role: 'tool',
                     name: functionName,
                     content: toolResult
-                })
+                });
+                cache.set(threadId, messages);
             }
         }
     }
@@ -105,9 +105,14 @@ export async function getGroqChatCompletion(messages) {
     });
 }
 
-async function webSearch({ query }) {
+async function searchWeb({ query }) {
     console.log("Calling web Search...");
-    const response = await tvly.search(query);
-    const finalResult = response.results.map((item) => item.content).join('\n\n');
-    return finalResult;
+    try {
+        const response = await tvly.search(query);
+        if (!response?.results?.length) return "No relevant information found online.";
+        return response.results.map(r => r.content).join('\n\n');
+    } catch (err) {
+        console.error("Web search failed:", err);
+        return "Sorry, I couldn’t fetch live data right now.";
+    }
 }
